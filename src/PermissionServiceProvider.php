@@ -2,6 +2,7 @@
 
 namespace Spatie\Permission;
 
+use Illuminate\Routing\Route;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\View\Compilers\BladeCompiler;
 use Spatie\Permission\Contracts\Role as RoleContract;
@@ -11,16 +12,29 @@ class PermissionServiceProvider extends ServiceProvider
 {
     public function boot(PermissionRegistrar $permissionLoader)
     {
-        $this->publishes([
-            __DIR__.'/../config/permission.php' => $this->app->configPath().'/permission.php',
-        ], 'config');
-
-        if (! class_exists('CreatePermissionTables')) {
-            $timestamp = date('Y_m_d_His', time());
-
+        if (isNotLumen()) {
             $this->publishes([
-                __DIR__.'/../database/migrations/create_permission_tables.php.stub' => $this->app->databasePath()."/migrations/{$timestamp}_create_permission_tables.php",
-            ], 'migrations');
+                __DIR__.'/../config/permission.php' => config_path('permission.php'),
+            ], 'config');
+
+            if (! class_exists('CreatePermissionTables')) {
+                $timestamp = date('Y_m_d_His', time());
+
+                $this->publishes([
+                    __DIR__.'/../database/migrations/create_permission_tables.php.stub' => $this->app->databasePath()."/migrations/{$timestamp}_create_permission_tables.php",
+                ], 'migrations');
+            }
+
+            if (app()->version() >= '5.5') {
+                $this->registerMacroHelpers();
+            }
+        }
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                Commands\CreateRole::class,
+                Commands\CreatePermission::class,
+            ]);
         }
 
         $this->registerModelBindings();
@@ -30,10 +44,12 @@ class PermissionServiceProvider extends ServiceProvider
 
     public function register()
     {
-        $this->mergeConfigFrom(
-            __DIR__.'/../config/permission.php',
-            'permission'
-        );
+        if (isNotLumen()) {
+            $this->mergeConfigFrom(
+                __DIR__.'/../config/permission.php',
+                'permission'
+            );
+        }
 
         $this->registerBladeExtensions();
     }
@@ -53,6 +69,11 @@ class PermissionServiceProvider extends ServiceProvider
                 list($role, $guard) = explode(',', $arguments.',');
 
                 return "<?php if(auth({$guard})->check() && auth({$guard})->user()->hasRole({$role})): ?>";
+            });
+            $bladeCompiler->directive('elserole', function ($arguments) {
+                list($role, $guard) = explode(',', $arguments.',');
+
+                return "<?php elseif(auth({$guard})->check() && auth({$guard})->user()->hasRole({$role})): ?>";
             });
             $bladeCompiler->directive('endrole', function () {
                 return '<?php endif; ?>';
@@ -84,6 +105,42 @@ class PermissionServiceProvider extends ServiceProvider
             $bladeCompiler->directive('endhasallroles', function () {
                 return '<?php endif; ?>';
             });
+
+            $bladeCompiler->directive('unlessrole', function ($arguments) {
+                list($role, $guard) = explode(',', $arguments.',');
+
+                return "<?php if(!auth({$guard})->check() || ! auth({$guard})->user()->hasRole({$role})): ?>";
+            });
+            $bladeCompiler->directive('endunlessrole', function () {
+                return '<?php endif; ?>';
+            });
+        });
+    }
+
+    protected function registerMacroHelpers()
+    {
+        Route::macro('role', function ($roles = []) {
+            if (! is_array($roles)) {
+                $roles = [$roles];
+            }
+
+            $roles = implode('|', $roles);
+
+            $this->middleware("role:$roles");
+
+            return $this;
+        });
+
+        Route::macro('permission', function ($permissions = []) {
+            if (! is_array($permissions)) {
+                $permissions = [$permissions];
+            }
+
+            $permissions = implode('|', $permissions);
+
+            $this->middleware("permission:$permissions");
+
+            return $this;
         });
     }
 }
